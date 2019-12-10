@@ -687,9 +687,9 @@ __wt_las_insert_updates(WT_CURSOR *cursor, WT_BTREE *btree, WT_PAGE *page, WT_MU
          * be a part of the saved update list, we need to write a birthmark for it, separate from
          * processing of the saved updates.
          */
-        if (list->onpage_upd != NULL && list->onpage_upd->ext != 0 && list->onpage_upd->size > 0 &&
-          (list->onpage_upd->type == WT_UPDATE_STANDARD ||
-              list->onpage_upd->type == WT_UPDATE_MODIFY)) {
+        if (list->onpage_upd != NULL && F_ISSET(list->onpage_upd, WT_UPDATE_TEMP_FROM_LAS) &&
+          list->onpage_upd->size > 0 && (list->onpage_upd->type == WT_UPDATE_STANDARD ||
+                                          list->onpage_upd->type == WT_UPDATE_MODIFY)) {
             /* Extend the buffer if needed */
             WT_ERR(__wt_buf_extend(
               session, birthmarks, (birthmarks_cnt + 1) * sizeof(WT_BIRTHMARK_DETAILS)));
@@ -719,7 +719,7 @@ __wt_las_insert_updates(WT_CURSOR *cursor, WT_BTREE *btree, WT_PAGE *page, WT_MU
          * item.
          */
         do {
-            if (upd->txnid == WT_TXN_ABORTED)
+            if (upd->txnid == WT_TXN_ABORTED || F_ISSET(upd, WT_UPDATE_HISTORY_STORE))
                 continue;
 
             switch (upd->type) {
@@ -749,7 +749,7 @@ __wt_las_insert_updates(WT_CURSOR *cursor, WT_BTREE *btree, WT_PAGE *page, WT_MU
             if (upd == list->onpage_upd && upd->size > 0 &&
               (upd->type == WT_UPDATE_STANDARD || upd->type == WT_UPDATE_MODIFY)) {
                 /* Make sure that we are generating a birthmark for an in-memory update. */
-                WT_ASSERT(session, upd->ext == 0);
+                WT_ASSERT(session, !F_ISSET(upd, WT_UPDATE_TEMP_FROM_LAS));
 
                 /* Extend the buffer if needed */
                 WT_ERR(__wt_buf_extend(
@@ -798,6 +798,10 @@ __wt_las_insert_updates(WT_CURSOR *cursor, WT_BTREE *btree, WT_PAGE *page, WT_MU
              * the tree.
              */
             WT_ERR(cursor->update(cursor));
+
+            /* Flag the update as now in the lookaside file */
+            upd->flags = WT_UPDATE_HISTORY_STORE;
+
             ++insert_cnt;
 
             /*
@@ -1663,7 +1667,7 @@ __wt_find_lookaside_upd(
              * has been dealt with. Mark this update as external and to be discarded when not
              * needed.
              */
-            upd->ext = 1;
+            F_SET(upd, WT_UPDATE_TEMP_FROM_LAS);
         *updp = upd;
 
         /* We are done, we found the record we were searching for */

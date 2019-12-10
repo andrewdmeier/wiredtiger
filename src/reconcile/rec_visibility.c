@@ -137,7 +137,7 @@ __get_next_rec_upd(WT_SESSION_IMPL *session, WT_UPDATE **inmem_upd_pos, bool *la
     use_las_rec = false;
 
     /* Free any external update we're holding. */
-    if (*updp != NULL && (*updp)->ext == 1)
+    if (*updp != NULL && F_ISSET(*updp, WT_UPDATE_TEMP_FROM_LAS))
         __wt_free_update_list(session, updp);
 
     /* Determine whether to use lookaside or an in-memory update. */
@@ -184,7 +184,7 @@ __get_next_rec_upd(WT_SESSION_IMPL *session, WT_UPDATE **inmem_upd_pos, bool *la
         (*updp)->durable_ts = durable_timestamp;
         (*updp)->start_ts = las_start.timestamp;
         (*updp)->prepare_state = prepare_state;
-        (*updp)->ext = 1;
+        F_SET(*updp, WT_UPDATE_TEMP_FROM_LAS);
 
         ret = las_cursor->prev(las_cursor);
         if (ret == WT_NOTFOUND) {
@@ -378,7 +378,7 @@ __wt_rec_upd_select(WT_SESSION_IMPL *session, WT_RECONCILE *r, WT_INSERT *ins, v
      * as a void* when applying it to the base update. It might be worth considering a similar data
      * structure for WT_ITEM since there's no need for them to be stored as WT_UPDATE structures.
      */
-    if (upd_select->upd != NULL && upd_select->upd->ext != 0 &&
+    if (upd_select->upd != NULL && F_ISSET(upd_select->upd, WT_UPDATE_TEMP_FROM_LAS) &&
       upd_select->upd->type == WT_UPDATE_MODIFY) {
         WT_CLEAR(las_key);
         WT_CLEAR(las_value);
@@ -464,7 +464,7 @@ __wt_rec_upd_select(WT_SESSION_IMPL *session, WT_RECONCILE *r, WT_INSERT *ins, v
         tmp_upd->durable_ts = upd_select->upd->durable_ts;
         tmp_upd->start_ts = upd_select->upd->start_ts;
         tmp_upd->prepare_state = upd_select->upd->prepare_state;
-        tmp_upd->ext = 1;
+        F_SET(tmp_upd, WT_UPDATE_TEMP_FROM_LAS);
         __wt_free_update_list(session, &upd_select->upd);
         upd_select->upd = tmp_upd;
         tmp_upd = NULL;
@@ -519,7 +519,8 @@ __wt_rec_upd_select(WT_SESSION_IMPL *session, WT_RECONCILE *r, WT_INSERT *ins, v
          * not we walked past it. We need this information to determine what range of timestamp we
          * are skipping.
          */
-        if (!walked_past_sel_upd && upd_select->upd != NULL && upd_select->upd->ext == 0)
+        if (!walked_past_sel_upd && upd_select->upd != NULL &&
+          !F_ISSET(upd_select->upd, WT_UPDATE_TEMP_FROM_LAS))
             walked_past_sel_upd = upd_select->upd == upd;
 
         if (!__rec_update_durable(session, r, upd)) {
@@ -660,8 +661,8 @@ __wt_rec_upd_select(WT_SESSION_IMPL *session, WT_RECONCILE *r, WT_INSERT *ins, v
      * Updates can be out of transaction ID order (but not out of timestamp order), so we track the
      * maximum transaction ID and the newest update with a timestamp (if any).
      */
-    all_stable = ((upd != NULL && upd->ext != 0) || upd == first_txn_upd) && !list_prepared &&
-      !list_uncommitted && __wt_txn_visible_all(session, max_txn, max_ts);
+    all_stable = ((upd != NULL && F_ISSET(upd, WT_UPDATE_TEMP_FROM_LAS)) || upd == first_txn_upd) &&
+      !list_prepared && !list_uncommitted && __wt_txn_visible_all(session, max_txn, max_ts);
 
     if (all_stable)
         goto check_original_value;
@@ -672,7 +673,7 @@ __wt_rec_upd_select(WT_SESSION_IMPL *session, WT_RECONCILE *r, WT_INSERT *ins, v
         WT_PANIC_ERR(session, EINVAL, "reconciliation error, update not visible");
 
     /* If not trying to evict the page, we know what we'll write and we're done. */
-    if (!F_ISSET(r, WT_REC_EVICT))
+    if (!F_ISSET(r, WT_REC_EVICT) || F_ISSET(r, WT_REC_CHECKPOINT))
         goto check_original_value;
 
     /*
@@ -701,9 +702,9 @@ __wt_rec_upd_select(WT_SESSION_IMPL *session, WT_RECONCILE *r, WT_INSERT *ins, v
      * TODO WT-5209: We need to re-work on the following code around writing the on-disk value as an
      * update in the list. Even though the test passes, I suspect this is not quite right.
      */
-    WT_ASSERT(
-      session, upd_select->upd == NULL || upd_select->upd->ext == 0 || last_inmem_upd != NULL);
-    if (upd_select->upd != NULL && upd_select->upd->ext == 0)
+    WT_ASSERT(session, upd_select->upd == NULL ||
+        !F_ISSET(upd_select->upd, WT_UPDATE_TEMP_FROM_LAS) == 0 || last_inmem_upd != NULL);
+    if (upd_select->upd != NULL && !F_ISSET(upd_select->upd, WT_UPDATE_TEMP_FROM_LAS))
         WT_ERR(__rec_update_save(session, r, ins, ripcip, upd_select->upd, upd_memsize));
     else {
         /*
